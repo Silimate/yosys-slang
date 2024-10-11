@@ -758,7 +758,7 @@ public:
 		if (raw_lexpr->kind == ast::ExpressionKind::Streaming) {
 			auto& stream_lexpr = raw_lexpr->as<ast::StreamingConcatenationExpression>();
 			RTLIL::SigSpec lvalue = eval.streaming(stream_lexpr, true);
-			log_assert(rvalue.size() >= lvalue.size()); // should have been checked by slang
+			ast_invariant(assign, rvalue.size() >= lvalue.size());
 			do_simple_assign(assign.sourceRange.start(), lvalue,
 							 rvalue.extract_end(rvalue.size() - lvalue.size()), blocking);
 			return;
@@ -1477,7 +1477,7 @@ RTLIL::Wire *SignalEvalContext::wire(const ast::Symbol &symbol)
 
 RTLIL::SigSpec SignalEvalContext::lhs(const ast::Expression &expr)
 {
-	log_assert(expr.kind != ast::ExpressionKind::Streaming);
+	ast_invariant(expr, expr.kind != ast::ExpressionKind::Streaming);
 	require(expr, expr.type->isFixedSize());
 	RTLIL::SigSpec ret;
 
@@ -1559,8 +1559,8 @@ RTLIL::SigSpec SignalEvalContext::connection_lhs(ast::AssignmentExpression const
 
 	while (rsymbol->kind == ast::ExpressionKind::Conversion)
 		rsymbol = &rsymbol->as<ast::ConversionExpression>().operand();
-	log_assert(rsymbol->kind == ast::ExpressionKind::EmptyArgument);
-	log_assert(rsymbol->type->isBitstreamType());
+	ast_invariant(assign, rsymbol->kind == ast::ExpressionKind::EmptyArgument);
+	ast_invariant(assign, rsymbol->type->isBitstreamType());
 
 	RTLIL::SigSpec ret = netlist.canvas->addWire(NEW_ID, rsymbol->type->getBitstreamWidth());
 	netlist.GroupConnect(
@@ -1671,7 +1671,7 @@ RTLIL::SigSpec SignalEvalContext::apply_nested_conversion(const ast::Expression 
 
 RTLIL::SigSpec SignalEvalContext::operator()(ast::Expression const &expr)
 {
-	log_assert(expr.kind != ast::ExpressionKind::Streaming);
+	ast_invariant(expr, expr.kind != ast::ExpressionKind::Streaming);
 	require(expr, expr.type->isVoid() || expr.type->isFixedSize());
 	RTLIL::Module *mod = netlist.canvas;
 	RTLIL::SigSpec ret;
@@ -1870,14 +1870,14 @@ RTLIL::SigSpec SignalEvalContext::operator()(ast::Expression const &expr)
 				ret = apply_conversion(conv, (*this)(conv.operand()));
 			} else {
 				const ast::Type &to = conv.type->getCanonicalType();
-				log_assert(to.isBitstreamType());
+				ast_invariant(conv, to.isBitstreamType());
 
 				// evaluate the bitstream
 				auto &stream_expr = conv.operand().as<ast::StreamingConcatenationExpression>();
 				RTLIL::SigSpec stream = streaming(stream_expr, false);
 
 				// pad to fit target size
-				log_assert(stream.size() <= expr.type->getBitstreamWidth());
+				ast_invariant(conv, stream.size() <= (int) expr.type->getBitstreamWidth());
 				ret = {stream, RTLIL::SigSpec(RTLIL::S0, expr.type->getBitstreamWidth() - stream.size())};
 			}
 		}
@@ -2023,7 +2023,7 @@ RTLIL::SigSpec SignalEvalContext::operator()(ast::Expression const &expr)
 		}
 		break;
 	case ast::ExpressionKind::LValueReference:
-		log_assert(lvalue != nullptr);
+		ast_invariant(expr, lvalue != nullptr);
 		ret = (*this)(*lvalue);
 		break;
 	default:
@@ -2037,7 +2037,7 @@ done:
 
 RTLIL::SigSpec SignalEvalContext::eval_signed(ast::Expression const &expr)
 {
-	require(expr, expr.type);
+	log_assert(expr.type);
 
 	if (expr.type->isNumeric() && !expr.type->isSigned())
 		return {RTLIL::S0, (*this)(expr)};
@@ -2544,33 +2544,71 @@ public:
 					}
 					case ast::SymbolKind::InterfacePort: {
 						require(sym, conn->getIfaceConn().second != nullptr && "must be a modport");
-						const ast::ModportSymbol &modport = *conn->getIfaceConn().second;
-						submodule.scopes_remap[&static_cast<const ast::Scope&>(modport)] =
-																		submodule.id(conn->port).str();
 
-						modport.visit(ast::makeVisitor([&](auto&, const ast::ModportPortSymbol &port) {
-							auto wire = submodule.add_wire(port);
-							log_assert(wire);
-							switch (port.direction) {
-							case ast::ArgumentDirection::In:
-								wire->port_input = true;
-								break;
-							case ast::ArgumentDirection::Out:
-								wire->port_output = true;
-								break;
-							case ast::ArgumentDirection::InOut:
-								wire->port_input = true;
-								wire->port_output = true;
-								break;
-							default:
-								unimplemented(port);
+						const ast::Symbol &iface_instance = *conn->getIfaceConn().first;
+						const ast::ModportSymbol &ref_modport = *conn->getIfaceConn().second;
+
+						const ast::Scope *iface_scope;
+						switch (iface_instance.kind) {
+						case ast::SymbolKind::InstanceArray:
+							iface_scope = static_cast<const ast::Scope *>(
+											&iface_instance.as<ast::InstanceArraySymbol>());
+							break;
+						case ast::SymbolKind::Instance:
+							iface_scope = static_cast<const ast::Scope *>(
+											&iface_instance.as<ast::InstanceSymbol>().body);
+							break;
+						default:
+							log_abort();
+							break;
+						}
+
+						// Failing this condition is a dead giveaway the iface_instance symbol
+						// is a placeholder made up by slang as a result of slicing. We shouldn't
+						// try supporting that case until slang#1152 is fixed which hopefully
+						// gives us more clarity into what the right handling is.
+						require(sym, iface_instance.getParentScope())
+
+						iface_instance.visit(ast::makeVisitor(
+							[&](auto &visitor, const ast::ModportSymbol &modport) {
+								// To support interface arrays, we need to match all the modports
+								// below iface_instance with the same name as ref_modport
+								if (!modport.name.compare(ref_modport.name)) {
+									submodule.scopes_remap[&static_cast<const ast::Scope&>(modport)] =
+															submodule.id(conn->port).str() + \
+															hierpath_relative_to(iface_scope, modport.getParentScope());
+									visitor.visitDefault(modport);
+								}
+							},
+							[&](auto&, const ast::ModportPortSymbol &port) {
+								auto wire = submodule.add_wire(port);
+								log_assert(wire);
+								switch (port.direction) {
+								case ast::ArgumentDirection::In:
+									wire->port_input = true;
+									break;
+								case ast::ArgumentDirection::Out:
+									wire->port_output = true;
+									break;
+								case ast::ArgumentDirection::InOut:
+									wire->port_input = true;
+									wire->port_output = true;
+									break;
+								default:
+									unimplemented(port);
+								}
+								ast_invariant(port, port.internalSymbol);
+
+								const ast::Scope *parent = port.getParentScope();
+								ast_invariant(port, parent->asSymbol().kind == ast::SymbolKind::Modport);
+								const ast::ModportSymbol &modport = parent->asSymbol().as<ast::ModportSymbol>();
+
+								if (netlist.scopes_remap.count(&modport))
+									cell->setPort(wire->name, netlist.wire(port));
+								else
+									cell->setPort(wire->name, netlist.wire(*port.internalSymbol));
 							}
-							ast_invariant(port, port.internalSymbol);
-							if (netlist.scopes_remap.count(&modport))
-								cell->setPort(wire->name, netlist.wire(port));
-							else
-								cell->setPort(wire->name, netlist.wire(*port.internalSymbol));
-						}));
+						));
 						break;
 					}
 					default:
@@ -2590,9 +2628,20 @@ public:
 		require(sym, !sym.getDelay() || settings.ignore_timing.value_or(false));
 		const ast::AssignmentExpression &expr = sym.getAssignment().as<ast::AssignmentExpression>();
 		ast_invariant(expr, !expr.timingControl);
+
+		RTLIL::SigSpec rvalue = netlist.eval(expr.right());
+
+		if (expr.left().kind == ast::ExpressionKind::Streaming) {
+			auto& stream_lexpr = expr.left().as<ast::StreamingConcatenationExpression>();
+			RTLIL::SigSpec lvalue = netlist.eval.streaming(stream_lexpr, true);
+			ast_invariant(expr, rvalue.size() >= lvalue.size());
+			netlist.canvas->connect(lvalue, rvalue);
+			return;
+		}
+
 		RTLIL::SigSpec lhs = netlist.eval.lhs(expr.left());
 		assert_nonstatic_free(lhs);
-		netlist.canvas->connect(lhs, netlist.eval(expr.right()));		
+		netlist.canvas->connect(lhs, rvalue);
 	}
 
 	void handle(const ast::GenerateBlockSymbol &sym)
@@ -2819,6 +2868,82 @@ static void build_hierpath2(NetlistContext &netlist,
 	}
 }
 
+static bool build_hierpath3(const ast::Scope *relative_to,
+							std::ostringstream &s, const ast::Scope *scope)
+{
+	log_assert(scope);
+
+	if (relative_to == scope)
+		return false;
+
+	const ast::Symbol *symbol = &scope->asSymbol();
+
+	if (symbol->kind == ast::SymbolKind::InstanceBody)
+		symbol = symbol->as<ast::InstanceBodySymbol>().parentInstance;
+	if (symbol->kind == ast::SymbolKind::CheckerInstanceBody)
+		symbol = symbol->as<ast::CheckerInstanceBodySymbol>().parentInstance;
+
+	bool pending;
+	if (auto parent = symbol->getParentScope()) {
+		pending = build_hierpath3(relative_to, s, parent);
+	} else {
+		log_abort();
+	}
+
+	if ((symbol->kind == ast::SymbolKind::GenerateBlockArray ||
+			symbol->kind == ast::SymbolKind::GenerateBlock ||
+			symbol->kind == ast::SymbolKind::Instance ||
+			symbol->kind == ast::SymbolKind::CheckerInstance ||
+			!symbol->name.empty() ||
+			symbol->kind == ast::SymbolKind::StatementBlock) &&
+			pending) {
+		s << ".";
+		pending = false;
+	}
+
+	if (symbol->kind == ast::SymbolKind::GenerateBlockArray) {
+		auto &array = symbol->as<ast::GenerateBlockArraySymbol>();
+		s << array.getExternalName();
+	} else if (symbol->kind == ast::SymbolKind::GenerateBlock) {
+		auto &block = symbol->as<ast::GenerateBlockSymbol>();
+		if (auto index = block.arrayIndex) {
+			s << "[" << index->toString(slang::LiteralBase::Decimal, false) << "]"; 
+		} else {
+			s << block.getExternalName();
+		}
+
+		pending = true;
+	} else if (symbol->kind == ast::SymbolKind::Instance ||
+			   symbol->kind == ast::SymbolKind::CheckerInstance) {
+		s << symbol->name;
+
+		auto &inst = symbol->as<ast::InstanceSymbolBase>();
+		if (!inst.arrayPath.empty()) {
+            for (size_t i = 0; i < inst.arrayPath.size(); i++)
+            	s << "[" << inst.arrayPath[i] << "]";
+		}
+
+		pending = true;
+	} else if (!symbol->name.empty()) {
+		s << symbol->name;
+
+		pending = true;
+	} else if (symbol->kind == ast::SymbolKind::StatementBlock) {
+		s << "$" << (int) symbol->getIndex();
+
+		pending = true;
+	}
+
+	return pending;
+}
+
+std::string hierpath_relative_to(const ast::Scope *relative_to, const ast::Scope *scope)
+{
+	std::ostringstream path;
+	build_hierpath3(relative_to, path, scope);
+	return path.str();
+}
+
 RTLIL::IdString NetlistContext::id(const ast::Symbol &symbol)
 {
 	std::ostringstream path;
@@ -2837,6 +2962,8 @@ RTLIL::Wire *NetlistContext::add_wire(const ast::ValueSymbol &symbol)
 RTLIL::Wire *NetlistContext::wire(const ast::Symbol &symbol)
 {
 	RTLIL::Wire *wire = canvas->wire(id(symbol));
+	if (!wire)
+		wire_missing(*this, symbol);
 	log_assert(wire);
 	return wire;
 }

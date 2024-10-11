@@ -199,6 +199,9 @@ struct NetlistContext : RTLILBuilder {
 	}
 };
 
+// slang_frontend.cc
+extern std::string hierpath_relative_to(const ast::Scope *relative_to, const ast::Scope *scope);
+
 // blackboxes.cc
 extern void import_blackboxes_from_rtlil(ast::Compilation &target, RTLIL::Design *source);
 
@@ -210,5 +213,8 @@ extern void import_blackboxes_from_rtlil(ast::Compilation &target, RTLIL::Design
 #define require(obj, property) { if (!(property)) unimplemented_(obj, __FILE__, __LINE__, #property); }
 #define unimplemented(obj) { slang_frontend::unimplemented_(obj, __FILE__, __LINE__, NULL); }
 #define ast_invariant(obj, property) require(obj, property)
+
+[[noreturn]] void wire_missing_(NetlistContext &netlist, const ast::Symbol &symbol, const char *file, int line);
+#define wire_missing(netlist, symbol) { wire_missing_(netlist, symbol, __FILE__, __LINE__); }
 
 };

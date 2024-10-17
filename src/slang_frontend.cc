@@ -154,13 +154,13 @@ static const RTLIL::IdString module_type_id(const ast::InstanceSymbol &sym)
 static const RTLIL::Const convert_svint(const slang::SVInt &svint)
 {
 	RTLIL::Const ret;
-	ret.bits.reserve(svint.getBitWidth());
+	ret.bits().reserve(svint.getBitWidth());
 	for (int i = 0; i < (int) svint.getBitWidth(); i++)
 	switch (svint[i].value) {
-	case 0: ret.bits.push_back(RTLIL::State::S0); break;
-	case 1: ret.bits.push_back(RTLIL::State::S1); break;
-	case slang::logic_t::X_VALUE: ret.bits.push_back(RTLIL::State::Sx); break;
-	case slang::logic_t::Z_VALUE: ret.bits.push_back(RTLIL::State::Sz); break;
+	case 0: ret.bits().push_back(RTLIL::State::S0); break;
+	case 1: ret.bits().push_back(RTLIL::State::S1); break;
+	case slang::logic_t::X_VALUE: ret.bits().push_back(RTLIL::State::Sx); break;
+	case slang::logic_t::Z_VALUE: ret.bits().push_back(RTLIL::State::Sz); break;
 	}
 	return ret;
 }
@@ -182,7 +182,7 @@ static const RTLIL::Const convert_const(const slang::ConstantValue &constval)
 		// TODO: is this right?
 		for (auto &el : constval.elements()) {
 			auto piece = convert_const(el);
-			ret.bits.insert(ret.bits.begin(), piece.bits.begin(), piece.bits.end());
+			ret.bits().insert(ret.bits().begin(), piece.bits().begin(), piece.bits().end());
 		}
 		log_assert(ret.size() == (int) constval.getBitstreamWidth());
 		return ret;
@@ -329,7 +329,7 @@ struct UpdateTiming {
 			RTLIL::Const pol;
 			RTLIL::SigSpec trg_signals;
 			for (auto trigger : triggers) {
-				pol.bits.push_back(trigger.edge_polarity ? RTLIL::S1 : RTLIL::S0);
+				pol.bits().push_back(trigger.edge_polarity ? RTLIL::S1 : RTLIL::S0);
 				trg_signals.append(trigger.signal);
 			}
 			params[ID::TRG_POLARITY] = pol;
@@ -3163,7 +3163,7 @@ struct UndrivenPass : Pass {
 
 				Const init = wire->attributes[ID::init];
 				while (init.size() < wire->width)
-					init.bits.push_back(RTLIL::Sx);
+					init.bits().push_back(RTLIL::Sx);
 
 				for (int i = 0; i < wire->width; i++)
 				if (!driven.check(SigBit(wire, i)) && (init[i] == RTLIL::S1 || init[i] == RTLIL::S0))

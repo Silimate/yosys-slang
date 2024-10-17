@@ -887,7 +887,7 @@ public:
 			for (auto prev : preceding_memwr) {
 				log_assert(prev->type == ID($memwr_v2));
 				if (prev->getParam(ID::MEMID) == memwr->getParam(ID::MEMID)) {
-					mask[prev->getParam(ID::PORTID).as_int()] = RTLIL::S1;
+					mask.bits()[prev->getParam(ID::PORTID).as_int()] = RTLIL::S1;
 				}
 			}
 			memwr->setParam(ID::PRIORITY_MASK, mask);

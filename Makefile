@@ -5,11 +5,6 @@ YOSYS_CONFIG := $(YOSYS_PREFIX)yosys-config
 SRCS = $(wildcard $(SRC_DIR)/src/*.cc)
 OBJS = $(patsubst $(SRC_DIR)/src/%.cc,build/%.o,$(SRCS))
 PLATFORM := $(shell uname -s)
-SLANG_INSTALL_LIB_DIR := build/slang_install/lib
-
-ifeq ($(PLATFORM),Linux)
-	SLANG_INSTALL_LIB_DIR := build/slang/lib64
-endif
 
 build: build/slang.so
 
@@ -72,7 +67,7 @@ build/slang.so: $(OBJS)
 	@echo "   LINK $@"
 	@$(YOSYS_CONFIG) --exec --cxx --cxxflags --ldflags -g -o $@ \
 		-shared $^ --ldlibs \
-		-L$(SLANG_INSTALL_LIB_DIR) \
+		-Lbuild/slang_install/lib \
 		-lsvlang -lfmt
 
 .PHONY: build configure-slang build-slang clean-slang clean-objects clean clean-all

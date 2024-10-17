@@ -4,7 +4,6 @@ VPATH := $(SRC_DIR)
 YOSYS_CONFIG := $(YOSYS_PREFIX)yosys-config
 SRCS = $(wildcard $(SRC_DIR)/src/*.cc)
 OBJS = $(patsubst $(SRC_DIR)/src/%.cc,build/%.o,$(SRCS))
-PLATFORM := $(shell uname -s)
 
 build: build/slang.so
 

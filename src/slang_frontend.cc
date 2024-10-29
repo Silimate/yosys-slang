@@ -77,7 +77,7 @@ struct SynthesisSettings {
 		            "Set unrolling limit (default: 4000)", "<limit>");
 		cmdLine.add("--extern-modules", extern_modules,
 		            "Import as an instantiable blackbox any module which was previously "
-		            "loaded into the current design by a Yosys command; this allows composing "
+		            "loaded into the current design with a Yosys command; this allows composing "
 		            "hierarchy of SystemVerilog and non-SystemVerilog modules");
 	}
 };
@@ -153,16 +153,16 @@ static const RTLIL::IdString module_type_id(const ast::InstanceSymbol &sym)
 
 static const RTLIL::Const convert_svint(const slang::SVInt &svint)
 {
-	RTLIL::Const ret;
-	ret.bits().reserve(svint.getBitWidth());
+	std::vector<RTLIL::State> bits;
+	bits.reserve(svint.getBitWidth());
 	for (int i = 0; i < (int) svint.getBitWidth(); i++)
 	switch (svint[i].value) {
-	case 0: ret.bits().push_back(RTLIL::State::S0); break;
-	case 1: ret.bits().push_back(RTLIL::State::S1); break;
-	case slang::logic_t::X_VALUE: ret.bits().push_back(RTLIL::State::Sx); break;
-	case slang::logic_t::Z_VALUE: ret.bits().push_back(RTLIL::State::Sz); break;
+	case 0: bits.push_back(RTLIL::State::S0); break;
+	case 1: bits.push_back(RTLIL::State::S1); break;
+	case slang::logic_t::X_VALUE: bits.push_back(RTLIL::State::Sx); break;
+	case slang::logic_t::Z_VALUE: bits.push_back(RTLIL::State::Sz); break;
 	}
-	return ret;
+	return bits;
 }
 
 static const RTLIL::Const convert_const(const slang::ConstantValue &constval)
@@ -178,14 +178,15 @@ static const RTLIL::Const convert_const(const slang::ConstantValue &constval)
 	if (constval.isInteger()) {
 		return convert_svint(constval.integer());
 	} else if (constval.isUnpacked()) {
-		RTLIL::Const ret;
+		std::vector<RTLIL::State> bits;
+		bits.reserve(constval.getBitstreamWidth());
 		// TODO: is this right?
 		for (auto &el : constval.elements()) {
 			auto piece = convert_const(el);
-			ret.bits().insert(ret.bits().begin(), piece.bits().begin(), piece.bits().end());
+			bits.insert(bits.begin(), piece.begin(), piece.end());
 		}
-		log_assert(ret.size() == (int) constval.getBitstreamWidth());
-		return ret;
+		log_assert(bits.size() == constval.getBitstreamWidth());
+		return bits;
 	} else if (constval.isString()) {
 		RTLIL::Const ret = convert_svint(constval.convertToInt().integer());
 		ret.flags |= RTLIL::CONST_FLAG_STRING;
@@ -326,13 +327,13 @@ struct UpdateTiming {
 		} else {
 			params[ID::TRG_ENABLE] = true;
 			params[ID::TRG_WIDTH] = triggers.size();
-			RTLIL::Const pol;
+			std::vector<RTLIL::State> pol_bits;
 			RTLIL::SigSpec trg_signals;
 			for (auto trigger : triggers) {
-				pol.bits().push_back(trigger.edge_polarity ? RTLIL::S1 : RTLIL::S0);
+				pol_bits.push_back(trigger.edge_polarity ? RTLIL::S1 : RTLIL::S0);
 				trg_signals.append(trigger.signal);
 			}
-			params[ID::TRG_POLARITY] = pol;
+			params[ID::TRG_POLARITY] = RTLIL::Const(pol_bits);
 			cell->setPort(ID::TRG, trg_signals);
 		}
 	}
@@ -883,11 +884,11 @@ public:
 			}
 			int portid = netlist.emitted_mems[id].num_wr_ports++;
 			memwr->setParam(ID::PORTID, portid);
-			RTLIL::Const mask(RTLIL::S0, portid);
+			std::vector<RTLIL::State> mask(portid, RTLIL::S0);
 			for (auto prev : preceding_memwr) {
 				log_assert(prev->type == ID($memwr_v2));
 				if (prev->getParam(ID::MEMID) == memwr->getParam(ID::MEMID)) {
-					mask.bits()[prev->getParam(ID::PORTID).as_int()] = RTLIL::S1;
+					mask[prev->getParam(ID::PORTID).as_int()] = RTLIL::S1;
 				}
 			}
 			memwr->setParam(ID::PRIORITY_MASK, mask);
@@ -1643,7 +1644,7 @@ RTLIL::SigSpec SignalEvalContext::apply_conversion(const ast::ConversionExpressi
 	const ast::Type &from = conv.operand().type->getCanonicalType();
 	const ast::Type &to = conv.type->getCanonicalType();
 
-	log_assert(op.size() == from.getBitstreamWidth());
+	log_assert(op.size() == (int) from.getBitstreamWidth());
 
 	if (from.isIntegral() && to.isIntegral()) {
 		op.extend_u0((int) to.getBitWidth(), to.isSigned());
@@ -2253,40 +2254,49 @@ public:
 			visitor.copy_case_tree_into(proc->root_case);
 
 			RTLIL::SigSpec driven = visitor.all_driven();
-			for (RTLIL::SigSpec driven_chunk : driven.chunks()) {
+			for (RTLIL::SigChunk driven_chunk : driven.chunks()) {
+				log_assert(netlist.wire_hdl_types.count(driven_chunk.wire));
+
 				RTLIL::SigSpec staging_chunk = driven_chunk;
 				staging_chunk.replace(visitor.vstate.visible_assignments);
 
 				RTLIL::Cell *cell;
 				if (aloads.empty()) {
-					cell = netlist.canvas->addDff(NEW_ID,
-											timing.triggers[0].signal, staging_chunk, driven_chunk,
-											timing.triggers[0].edge_polarity);
-					transfer_attrs(symbol, cell);
+					for (auto [named_chunk, name] : generate_subfield_names(driven_chunk, netlist.wire_hdl_types.at(driven_chunk.wire))) {
+						cell = netlist.canvas->addDff(netlist.canvas->uniquify("$driver$" + name),
+												timing.triggers[0].signal,
+												staging_chunk.extract(named_chunk.offset - driven_chunk.offset, named_chunk.width),
+												named_chunk,
+												timing.triggers[0].edge_polarity);
+						transfer_attrs(symbol, cell);	
+					}
 				} else if (aloads.size() == 1) {
 					RTLIL::SigSpec aload_chunk = driven_chunk;
 					aload_chunk.replace(aloads[0].values);
 
-					RTLIL::SigSpec aldff_d, aldff_q, aldff_aload;
-					RTLIL::SigSpec dffe_d, dffe_q; // fallback
+					RTLIL::SigSpec aldff_q;
+					RTLIL::SigSpec dffe_q; // fallback
 
 					for (int i = 0; i < driven_chunk.size(); i++) {
-						if (aload_chunk[i] != driven_chunk[i]) {
-							aldff_d.append(staging_chunk[i]);
-							aldff_q.append(driven_chunk[i]);
-							aldff_aload.append(aload_chunk[i]);
-						} else {
-							dffe_d.append(staging_chunk[i]);
-							dffe_q.append(driven_chunk[i]);
-						}
+						if (aload_chunk[i] != RTLIL::SigSpec(driven_chunk)[i])
+							aldff_q.append(RTLIL::SigSpec(driven_chunk)[i]);
+						else
+							dffe_q.append(RTLIL::SigSpec(driven_chunk)[i]);
 					}
 
 					if (!aldff_q.empty()) {
-						cell = netlist.canvas->addAldff(NEW_ID,
-												timing.triggers[0].signal, aloads[0].trigger,
-												aldff_d, aldff_q, aldff_aload,
-												timing.triggers[0].edge_polarity, aloads[0].trigger_polarity);
-						transfer_attrs(symbol, cell);
+						for (auto driven_chunk2 : aldff_q.chunks())
+						for (auto [named_chunk, name] : generate_subfield_names(driven_chunk2, netlist.wire_hdl_types.at(driven_chunk.wire))) {
+							cell = netlist.canvas->addAldff(netlist.canvas->uniquify("$driver$" + name),
+													timing.triggers[0].signal,
+													aloads[0].trigger,
+													staging_chunk.extract(named_chunk.offset - driven_chunk.offset, named_chunk.width),
+													named_chunk,
+													aload_chunk.extract(named_chunk.offset - driven_chunk.offset, named_chunk.width),
+													timing.triggers[0].edge_polarity,
+													aloads[0].trigger_polarity);
+							transfer_attrs(symbol, cell);
+						}
 					}
 
 					if (!dffe_q.empty()) {
@@ -2294,11 +2304,17 @@ public:
 						diag << std::string(log_signal(dffe_q));
 						diag.addNote(diag::NoteDuplicateEdgeSense, timed.timing.sourceRange);
 
-						cell = netlist.canvas->addDffe(NEW_ID,
-												timing.triggers[0].signal, aloads[0].trigger,
-												dffe_d, dffe_q,
-												timing.triggers[0].edge_polarity, !aloads[0].trigger_polarity);
-						transfer_attrs(symbol, cell);
+						for (auto driven_chunk2 : dffe_q.chunks())
+						for (auto [named_chunk, name] : generate_subfield_names(driven_chunk2, netlist.wire_hdl_types.at(driven_chunk.wire))) {
+							cell = netlist.canvas->addDffe(netlist.canvas->uniquify("$driver$" + name),
+													timing.triggers[0].signal,
+													aloads[0].trigger,
+													staging_chunk.extract(named_chunk.offset - driven_chunk.offset, named_chunk.width),
+													named_chunk,
+													timing.triggers[0].edge_polarity,
+													!aloads[0].trigger_polarity);
+							transfer_attrs(symbol, cell);
+						}
 					}
 				} else {
 					log_abort();
@@ -2956,6 +2972,7 @@ RTLIL::Wire *NetlistContext::add_wire(const ast::ValueSymbol &symbol)
 {
 	auto w = canvas->addWire(id(symbol), symbol.getType().getBitstreamWidth());
 	transfer_attrs(symbol, w);
+	wire_hdl_types[w] = &symbol.getType();
 	return w;
 }
 
@@ -3009,6 +3026,46 @@ struct SlangFrontend : Frontend {
 		log("%s\n", driver.cmdLine.getHelpText("Slang-based SystemVerilog frontend").c_str());
 	}
 
+	std::optional<std::string> read_heredoc(std::vector<std::string> &args)
+	{
+		std::string eot;
+
+		if (!args.empty() && args.back().compare(0, 2, "<<") == 0) {
+			eot = args.back().substr(2);
+			args.pop_back();
+		} else if (args.size() >= 2 && args[args.size() - 2] == "<<") {
+			eot = args.back();
+			args.pop_back();
+			args.pop_back();
+		} else {
+			return {};
+		}
+
+		if (eot.empty())
+			log_error("Missing EOT marker for reading a here-document\n");
+
+		std::string buffer;
+		bool in_script = current_script_file != nullptr;
+
+		while (true) {
+			char line[4096];
+			if (!fgets(line, sizeof(line), in_script ? current_script_file : stdin))
+				log_error("Unexpected EOF reading a here-document\n");
+
+			const char *p = line;
+			while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+				p++;
+
+			if (!strncmp(p, eot.data(), eot.size()) &&
+				(*(p + eot.size()) == '\r' || *(p + eot.size()) == '\n'))
+				break;
+			else
+				buffer += line;
+		}
+
+		return buffer;
+	}
+
 	void execute(std::istream *&f, std::string filename, std::vector<std::string> args, RTLIL::Design *design) override
 	{
 		(void) f;
@@ -3021,6 +3078,11 @@ struct SlangFrontend : Frontend {
 		settings.addOptions(driver.cmdLine);
 		diag::setup_messages(driver.diagEngine);
 		{
+			if (auto heredoc = read_heredoc(args)) {
+				auto buffer = driver.sourceManager.assignText("<inlined>", std::string_view{heredoc.value()});
+				driver.sourceLoader.addBuffer(buffer);
+			}
+
 			std::vector<char *> c_args;
 			for (auto arg : args) {
 				char *c = new char[arg.size() + 1];
@@ -3161,12 +3223,9 @@ struct UndrivenPass : Pass {
 				if (!wire->attributes.count(ID::init) || wire->port_input)
 					continue;
 
-				Const init = wire->attributes[ID::init];
-				while (init.size() < wire->width)
-					init.bits().push_back(RTLIL::Sx);
-
+				Const &init = wire->attributes[ID::init];
 				for (int i = 0; i < wire->width; i++)
-				if (!driven.check(SigBit(wire, i)) && (init[i] == RTLIL::S1 || init[i] == RTLIL::S0))
+				if (!driven.check(SigBit(wire, i)) && i < init.size() && (init[i] == RTLIL::S1 || init[i] == RTLIL::S0))
 					module->connect(SigBit(wire, i), init[i]);
 			}
 		}

@@ -50,8 +50,11 @@ namespace diag {
 	slang::DiagCode NoParamsOnUnkBboxes(slang::DiagSubsystem::Netlist, 1037);
 	slang::DiagCode ConnNameRequiredOnUnkBboxes(slang::DiagSubsystem::Netlist, 1038);
 	slang::DiagCode BboxTypeParameter(slang::DiagSubsystem::Netlist, 1039);
+	slang::DiagCode BboxExportPortWidths(slang::DiagSubsystem::Netlist, 1040);
+	slang::DiagCode NoteIgnoreInitial(slang::DiagSubsystem::Netlist, 1041);
+	slang::DiagCode PortCorrespondence(slang::DiagSubsystem::Netlist, 1042);
 
-	slang::DiagGroup unsynthesizable("unsynthesizable", {IffUnsupported, SignalSensitivityAmbiguous, GenericTimingUnsyn, BothEdgesUnsupported, ExpectingIfElseAload,
+	slang::DiagGroup unsynthesizable("unsynthesizable", {IffUnsupported, GenericTimingUnsyn, BothEdgesUnsupported, ExpectingIfElseAload,
 														 IfElseAloadPolarity, IfElseAloadMismatch});
 	slang::DiagGroup sanity("sanity", {EdgeImplicitMixing});
 
@@ -59,8 +62,9 @@ namespace diag {
 	{
 		engine.setMessage(IffUnsupported, "iff qualifier will not be synthesized");
 		engine.setMessage(SignalSensitivityAmbiguous, "non-edge sensitivity on a signal will be synthesized as @* sensitivity");
+		engine.setSeverity(SignalSensitivityAmbiguous, slang::DiagnosticSeverity::Warning);
 		engine.setMessage(EdgeImplicitMixing, "mixing of implicit and edge sensitivity");
-		engine.setMessage(GenericTimingUnsyn, "unsynthesizable timing control");
+		engine.setMessage(GenericTimingUnsyn, "unsynthesizable timing control (ignore with '--ignore-timing')");
 		engine.setMessage(BothEdgesUnsupported, "'edge' sensitivity will not be synthesized");
 		engine.setMessage(NoteSignalEvent, "signal event specified here");
 		engine.setSeverity(NoteSignalEvent, slang::DiagnosticSeverity::Note);
@@ -150,6 +154,15 @@ namespace diag {
 
 		engine.setMessage(BboxTypeParameter, "blackbox cannot have a type parameter");
 		engine.setSeverity(BboxTypeParameter, slang::DiagnosticSeverity::Error);
+
+		engine.setMessage(BboxExportPortWidths, "cannot export a blackbox definition with non-constant port widths");
+		engine.setSeverity(BboxExportPortWidths, slang::DiagnosticSeverity::Error);
+
+		engine.setMessage(NoteIgnoreInitial, "use option '--ignore-initial' to ignore initial blocks");
+		engine.setSeverity(NoteIgnoreInitial, slang::DiagnosticSeverity::Note);
+
+		engine.setMessage(PortCorrespondence, "ports without direct correspondence to an internal net/variable unsupported");
+		engine.setSeverity(PortCorrespondence, slang::DiagnosticSeverity::Error);
 	}
 };
 };

@@ -41,6 +41,8 @@ struct SynthesisSettings {
 	std::optional<int> unroll_limit_;
 	std::optional<bool> extern_modules;
 	std::optional<bool> no_implicit_memories;
+	std::optional<bool> empty_blackboxes;
+	std::optional<bool> elaborate_only;
 
 	enum HierMode {
 		NONE,
@@ -64,6 +66,7 @@ struct SynthesisSettings {
 	void addOptions(slang::CommandLine &cmdLine) {
 		cmdLine.add("--dump-ast", dump_ast, "Dump the AST");
 		cmdLine.add("--no-proc", no_proc, "Disable lowering of processes");
+		// TODO: deprecate; now on by default
 		cmdLine.add("--compat-mode", compat_mode,
 					"Be relaxed about the synthesis semantics of some language constructs");
 		cmdLine.add("--keep-hierarchy", keep_hierarchy,
@@ -83,6 +86,10 @@ struct SynthesisSettings {
 		            "hierarchy of SystemVerilog and non-SystemVerilog modules");
 		cmdLine.add("--no-implicit-memories", no_implicit_memories,
 					"Require a memory style attribute to consider a variable for memory inference");
+		cmdLine.add("--empty-blackboxes", empty_blackboxes,
+					"Assume empty modules are blackboxes");
+		cmdLine.add("--elaborate-only", elaborate_only,
+					"Do not do netlist conversion");
 	}
 };
 
@@ -94,8 +101,6 @@ namespace parsing = slang::parsing;
 
 ast::Compilation *global_compilation;
 const slang::SourceManager *global_sourcemgr;
-slang::DiagnosticEngine *global_diagengine;
-slang::TextDiagnosticClient *global_diagclient;
 
 slang::SourceRange source_location(const ast::Symbol &obj)			{ return slang::SourceRange(obj.location, obj.location); }
 slang::SourceRange source_location(const ast::Expression &expr)		{ return expr.sourceRange; }
@@ -202,6 +207,16 @@ static const RTLIL::Const convert_const(const slang::ConstantValue &constval)
 	log_abort();
 }
 
+static const RTLIL::Const reverse_data(RTLIL::Const &orig, int width)
+{
+	std::vector<RTLIL::State> bits;
+	log_assert(orig.size() % width == 0);
+	bits.reserve(orig.size());
+	for (int i = orig.size() - width; i >= 0; i -= width)
+		bits.insert(bits.end(), orig.begin() + i, orig.begin() + i + width);
+	return bits;
+}
+
 template<typename T>
 void transfer_attrs(T &from, RTLIL::AttrObject *to)
 {
@@ -212,7 +227,7 @@ void transfer_attrs(T &from, RTLIL::AttrObject *to)
 	for (auto attr : global_compilation->getAttributes(from))
 		to->attributes[id(attr->name)] = convert_const(attr->getValue());
 }
-
+template void transfer_attrs<ast::Symbol>(ast::Symbol &from, RTLIL::AttrObject *to);
 
 #define assert_nonstatic_free(signal) \
 	for (auto bit : (signal)) \
@@ -797,8 +812,8 @@ public:
 	void assign_rvalue_inner(const ast::AssignmentExpression &assign, const ast::Expression *raw_lexpr,
 							 RTLIL::SigSpec raw_rvalue, RTLIL::SigSpec raw_mask, bool blocking)
 	{
-		log_assert(raw_mask.size() == (int) raw_lexpr->type->getBitstreamWidth());
-		log_assert(raw_rvalue.size() == (int) raw_lexpr->type->getBitstreamWidth());
+		ast_invariant(assign, raw_mask.size() == (int) raw_lexpr->type->getBitstreamWidth());
+		ast_invariant(assign, raw_rvalue.size() == (int) raw_lexpr->type->getBitstreamWidth());
 
 		bool finished_etching = false;
 		bool memory_write = false;
@@ -2373,13 +2388,9 @@ public:
 			return;
 
 		auto result = body.visit(initial_eval);
-		if (result != ast::Statement::EvalResult::Success) {
-			for (auto& diag : initial_eval.context.getAllDiagnostics())
-    			global_diagengine->issue(diag);
-			auto str = global_diagclient->getString();
-			log_error("Failed to execute initial block\n%s\n",
-					  str.c_str());
-		}
+		if (result != ast::Statement::EvalResult::Success)
+    		initial_eval.context.addDiag(diag::NoteIgnoreInitial,
+    									 slang::SourceLocation::NoLocation);
 	}
 
 	void handle(const ast::ProceduralBlockSymbol &symbol)
@@ -2398,8 +2409,8 @@ public:
 		if (sym.getParentScope()->getContainingInstance() != &netlist.realm)
 			return;
 
-		if (!sym.internalSymbol) {
-			// This can happen in case of a compilation error.
+		if (!sym.internalSymbol || sym.internalSymbol->name.compare(sym.name)) {
+			sym.getParentScope()->addDiag(diag::PortCorrespondence, sym.location);
 			return;
 		}
 
@@ -2455,19 +2466,23 @@ public:
 		}
 	}
 
-	static bool has_blackbox_attribute(const ast::DefinitionSymbol &sym)
+	bool is_blackbox(const ast::DefinitionSymbol &sym)
 	{
 		for (auto attr : sym.getParentScope()->getCompilation().getAttributes(sym)) {
 			if (attr->name == "blackbox"sv && !attr->getValue().isFalse())
 				return true;
 		}
+
+		if (settings.empty_blackboxes.value_or(false))
+			return is_decl_empty_module(*sym.getSyntax());
+
 		return false;
 	}
 
 	void handle(const ast::InstanceSymbol &sym)
 	{
 		// blackboxes get special handling no matter the hierarchy mode
-		if (sym.isModule() && has_blackbox_attribute(sym.body.getDefinition())) {
+		if (sym.isModule() && is_blackbox(sym.body.getDefinition())) {
 			RTLIL::Cell *cell = netlist.canvas->addCell(netlist.id(sym), RTLIL::escape_id(std::string(sym.body.name)));
 
 			for (auto *conn : sym.getPortConnections()) {
@@ -2511,6 +2526,7 @@ public:
 				// no-op
 			}));
 			transfer_attrs(sym, cell);
+			export_blackbox_to_rtlil(netlist.compilation, sym, netlist.canvas->design);
 			return;
 		}
 
@@ -2834,9 +2850,26 @@ public:
 				log_assert(storage);
 				auto const_ = convert_const(*storage);
 				if (!const_.is_fully_undef()) {
-					auto wire = netlist.wire(sym);
-					log_assert(wire);
-					wire->attributes[RTLIL::ID::init] = const_;
+					if (is_inferred_memory(sym)) {
+						RTLIL::IdString id = netlist.id(sym);
+						RTLIL::Memory *m = netlist.canvas->memories.at(id);
+						RTLIL::Cell *meminit = netlist.canvas->addCell(NEW_ID, ID($meminit_v2));
+						int abits = 32;
+						ast_invariant(sym, m->width * m->size == const_.size());
+						meminit->setParam(ID::MEMID, id.str());
+						meminit->setParam(ID::PRIORITY, 0);
+						meminit->setParam(ID::ABITS, abits);
+						meminit->setParam(ID::WORDS, m->size);
+						meminit->setParam(ID::WIDTH, m->width);
+						meminit->setPort(ID::ADDR, m->start_offset);
+						bool little_endian = sym.getType().getFixedRange().isLittleEndian();
+						meminit->setPort(ID::DATA, little_endian ? const_ : reverse_data(const_, m->width));
+						meminit->setPort(ID::EN, RTLIL::Const(RTLIL::S1, m->width));
+					} else {
+						auto wire = netlist.wire(sym);
+						log_assert(wire);
+						wire->attributes[RTLIL::ID::init] = const_;
+					}
 				}
 			}
 		}, [&](auto&, const ast::InstanceSymbol&) {
@@ -2851,14 +2884,7 @@ public:
 		});
 		sym.visit(inittransfer);
 
-		for (auto& diag : initial_eval.context.getAllDiagnostics())
-        	global_diagengine->issue(diag);
-		auto str = global_diagclient->getString();
-		if (global_diagengine->getNumErrors())
-			log_error("%s", str.c_str());
-		else
-			log("%s", str.c_str());
-		global_diagclient->clear();
+		initial_eval.context.reportAllDiags();
 	}
 
 	void handle(const ast::UninstantiatedDefSymbol &sym)
@@ -3183,11 +3209,6 @@ struct SlangFrontend : Frontend {
 		if (!driver.processOptions())
 			log_cmd_error("Bad command\n");
 
-		if (settings.compat_mode.value_or(false)) {
-			driver.diagEngine.setSeverity(diag::SignalSensitivityAmbiguous,
-										  slang::DiagnosticSeverity::Warning);
-		}
-
 		try {
 			if (!driver.parseAllSources())
 				log_error("Parsing failed\n");
@@ -3217,11 +3238,14 @@ struct SlangFrontend : Frontend {
 					log_error("Compilation failed\n");
 			}
 
+			if (settings.elaborate_only.value_or(false)) {
+				if (!driver.reportCompilation(*compilation, /* quiet */ false))
+					log_error("Compilation failed\n");
+				return;
+			}
+
 			global_compilation = &(*compilation);
 			global_sourcemgr = compilation->getSourceManager();
-			global_diagengine = &driver.diagEngine;
-			global_diagclient = driver.diagClient.get();
-			global_diagclient->clear();
 
 			InferredMemoryDetector mem_detect;
 			mem_detect.no_implicit = settings.no_implicit_memories.value_or(false);
@@ -3397,9 +3421,6 @@ struct TestSlangExprPass : Pass {
 
 		global_compilation = &(*compilation);
 		global_sourcemgr = compilation->getSourceManager();
-		global_diagengine = &driver.diagEngine;
-		global_diagclient = driver.diagClient.get();
-		global_diagclient->clear();
 
 		NetlistContext netlist(d, settings, *compilation, *top);
 		PopulateNetlist populate(netlist);

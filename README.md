@@ -12,7 +12,11 @@ The plugin is available prebuilt as part of
 
 ## Status
 
-*News:* The [Microelectronics Design Center](https://dz.ethz.ch/) at ETH Zürich is now sponsoring yosys-slang development for usage in ASIC synthesis flows!
+<a href="http://asic.ethz.ch/2024/MLEM.html"><img align="right" width="150" height="150" src="docs/mlem.jpg"></a>
+
+**News:** ETH Zürich has used yosys-slang for a chip tapeout. [Meet MLEM](http://asic.ethz.ch/2024/MLEM.html).
+
+**News:** The [Microelectronics Design Center](https://dz.ethz.ch/) at ETH Zürich is now sponsoring yosys-slang development for usage in ASIC synthesis flows!
 
 yosys-slang understands a synthesizable subset of SystemVerilog. Please open GitHub issues for missing features and/or confusing error messages.
 
@@ -54,7 +58,7 @@ Then build both slang and the `build/slang.so` plugin for Yosys:
 
 Use a custom `-jN` switch to build with `N` concurrent processes instead of matching the number of cores.
 
-The built plugin is placed at `build/slang.so`. Copy this file into the Yosys plugin directory, or use a full path to this file (instead of the `slang` shorthand) when loading the plugin.
+The built plugin is placed at `build/slang.so`. Copy this file into the Yosys plugin directory, which can be achieved through `make install`, or use a full path to this file (instead of the `slang` shorthand) when loading the plugin.
 
 ## Usage
 
@@ -66,7 +70,9 @@ Or, alternatively, you load the plugin at runtime with the `plugin` command:
 
     plugin -i slang
 
-After the plugin has been loaded, the frontend is invoked with the `read_slang` command. The command accepts standard slang options, see `help read_slang` and [slang documentation](https://www.sv-lang.com/command-line-ref.html).
+After the plugin has been loaded, the frontend is invoked with the `read_slang` command.
+
+For a full documentation of the command options, see `help read_slang`. The command understands standard [slang options](https://www.sv-lang.com/command-line-ref.html) in addition to other options.
 
 Sample usage:
 

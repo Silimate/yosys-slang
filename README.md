@@ -44,7 +44,9 @@ If you wish to sponsor the project's development, and prioritize certain feature
 
 *Prerequisities:*
 
- * Yosys installed
+ * Yosys installed: supported versions are **0.44 0.45 0.46 0.47 0.48 0.49**
+
+ * C++ compiler: GCC 11 and clang 17 are minimum supported versions
 
  * Usual toolchains, CMake
 
@@ -72,7 +74,9 @@ Or, alternatively, you load the plugin at runtime with the `plugin` command:
 
 After the plugin has been loaded, the frontend is invoked with the `read_slang` command.
 
-For a full documentation of the command options, see `help read_slang`. The command understands standard [slang options](https://www.sv-lang.com/command-line-ref.html) in addition to other options.
+For a full documentation of the command options, see `help read_slang`. The command understands standard [slang options](https://www.sv-lang.com/command-line-ref.html) except for:
+
+ * `-Wno-unknown-sys-name` / `-Wunknown-sys-name`
 
 Sample usage:
 

@@ -10,9 +10,11 @@
 #include "slang/ast/SystemSubroutine.h"
 #include "slang/diagnostics/DiagnosticEngine.h"
 #include "slang/diagnostics/TextDiagnosticClient.h"
+#include "slang/diagnostics/CompilationDiags.h"
 #include "slang/driver/Driver.h"
 #include "slang/syntax/SyntaxPrinter.h"
 #include "slang/syntax/SyntaxTree.h"
+#include "slang/syntax/AllSyntax.h"
 #include "slang/text/Json.h"
 #include "slang/util/Util.h"
 
@@ -224,10 +226,21 @@ void transfer_attrs(T &from, RTLIL::AttrObject *to)
 	if (!src.empty())
 		to->attributes[Yosys::ID::src] = src;
 
-	for (auto attr : global_compilation->getAttributes(from))
+	for (auto attr : global_compilation->getAttributes(from)) {
 		to->attributes[id(attr->name)] = convert_const(attr->getValue());
+
+		// slang converts string literals to integer constants per the spec;
+		// we need to dig into the syntax tree to recover the information
+		if (attr->getSyntax() &&
+			attr->getSyntax()->kind == syntax::SyntaxKind::AttributeSpec &&
+			attr->getSyntax()->template as<syntax::AttributeSpecSyntax>().value &&
+			attr->getSyntax()->template as<syntax::AttributeSpecSyntax>().value->expr->kind ==
+				syntax::SyntaxKind::StringLiteralExpression) {
+			to->attributes[id(attr->name)].flags |= RTLIL::CONST_FLAG_STRING;
+		}
+	}
 }
-template void transfer_attrs<ast::Symbol>(ast::Symbol &from, RTLIL::AttrObject *to);
+template void transfer_attrs<const ast::Symbol>(const ast::Symbol &from, RTLIL::AttrObject *to);
 
 #define assert_nonstatic_free(signal) \
 	for (auto bit : (signal)) \
@@ -364,7 +377,7 @@ RTLIL::SigBit inside_comparison(SignalEvalContext &eval, RTLIL::SigSpec left,
 	if (expr.kind == ast::ExpressionKind::ValueRange) {
 		const auto& vexpr = expr.as<ast::ValueRangeExpression>();
 		require(expr, vexpr.rangeKind == ast::ValueRangeKind::Simple);
-		require(expr, vexpr.left().type == vexpr.right().type);
+		ast_invariant(expr, vexpr.left().type->isMatching(*vexpr.right().type));
 		return eval.netlist.LogicAnd(
 			eval.netlist.Ge(left, eval(vexpr.left()), vexpr.left().type->isSigned()),
 			eval.netlist.Le(left, eval(vexpr.right()), vexpr.right().type->isSigned())
@@ -767,7 +780,8 @@ public:
 
 	void assign_rvalue(const ast::AssignmentExpression &assign, RTLIL::SigSpec rvalue)
 	{
-		require(assign, !assign.timingControl || netlist.settings.ignore_timing.value_or(false));
+		if (assign.timingControl && !netlist.settings.ignore_timing.value_or(false))
+				netlist.realm.addDiag(diag::GenericTimingUnsyn, assign.timingControl->sourceRange);
 
 		bool blocking = !assign.isNonBlocking();
 		const ast::Expression *raw_lexpr = &assign.left();
@@ -2082,7 +2096,7 @@ error:
 	}
 
 done:
-	log_assert(ret.size() == (int) expr.type->getBitstreamWidth());
+	ast_invariant(expr, ret.size() == (int) expr.type->getBitstreamWidth());
 	return ret;
 }
 
@@ -3131,6 +3145,18 @@ USING_YOSYS_NAMESPACE
 static std::vector<std::string> default_options;
 static std::vector<std::vector<std::string>> defaults_stack;
 
+void set_option_defaults(slang::driver::Driver &driver)
+{
+	driver.options.translateOffOptions = {
+		"pragma,synthesis_off,synthesis_on",
+		"pragma,translate_off,translate_on",
+		"synopsys,synthesis_off,synthesis_on",
+		"synopsys,translate_off,translate_on",
+		"synthesis,translate_off,translate_on",
+		"xilinx,translate_off,translate_on",
+	};
+}
+
 struct SlangFrontend : Frontend {
 	SlangFrontend() : Frontend("slang", "read SystemVerilog (slang)") {}
 
@@ -3138,6 +3164,7 @@ struct SlangFrontend : Frontend {
 	{
 		slang::driver::Driver driver;
 		driver.addStandardArgs();
+		set_option_defaults(driver);
 		SynthesisSettings settings;
 		settings.addOptions(driver.cmdLine);
 		log("%s\n", driver.cmdLine.getHelpText("Slang-based SystemVerilog frontend").c_str());
@@ -3191,9 +3218,12 @@ struct SlangFrontend : Frontend {
 
 		slang::driver::Driver driver;
 		driver.addStandardArgs();
+		set_option_defaults(driver);
 		SynthesisSettings settings;
 		settings.addOptions(driver.cmdLine);
 		diag::setup_messages(driver.diagEngine);
+		// TODO: move me elsewhere
+		driver.diagEngine.setSeverity(slang::diag::MissingTimeScale, slang::DiagnosticSeverity::Ignored);
 		{
 			if (auto heredoc = read_heredoc(args)) {
 				auto buffer = driver.sourceManager.assignText("<inlined>", std::string_view{heredoc.value()});
@@ -3323,7 +3353,7 @@ struct SlangDefaultsPass : Pass {
 		log("\n");
 	}
 
-	void execute(std::vector<std::string> args, RTLIL::Design *d) override
+	void execute(std::vector<std::string> args, [[maybe_unused]] RTLIL::Design *d) override
 	{
 		if (args.size() < 2)
 			cmd_error(args, 1, "Missing argument");

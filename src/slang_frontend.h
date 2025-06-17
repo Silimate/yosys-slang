@@ -43,6 +43,7 @@ namespace slang {
 namespace slang_frontend {
 
 using Yosys::log;
+using Yosys::log_flush;
 using Yosys::log_error;
 using Yosys::log_warning;
 using Yosys::log_id;
@@ -316,13 +317,13 @@ struct RTLILBuilder {
 	using SigSpec = RTLIL::SigSpec;
 
 	RTLIL::Module *canvas;
+	Yosys::dict<RTLIL::IdString, RTLIL::Const> staged_attributes;
 
 	unsigned next_id = 0;
 	std::string new_id(std::string base = std::string());
 
 	SigSpec ReduceBool(SigSpec a);
 
-	SigSpec Sub(SigSpec a, SigSpec b, bool is_signed);
 	SigSpec Demux(SigSpec a, SigSpec s);
 	SigSpec Le(SigSpec a, SigSpec b, bool is_signed);
 	SigSpec Ge(SigSpec a, SigSpec b, bool is_signed);
@@ -353,6 +354,34 @@ struct RTLILBuilder {
 			done += chunk.size();
 		}
 	}
+
+private:
+	std::pair<std::string, SigSpec> add_y_wire(int width);
+	// apply attributes to newly created cell
+	void bless_cell(RTLIL::Cell *cell);
+};
+
+class AttributeGuard {
+public:
+	AttributeGuard(RTLILBuilder &builder)
+		: builder(builder)
+	{
+		save.swap(builder.staged_attributes);
+	}
+
+	~AttributeGuard()
+	{
+		save.swap(builder.staged_attributes);
+	}
+
+	void set(RTLIL::IdString id, RTLIL::Const value)
+	{
+		builder.staged_attributes[id] = value;
+	}
+
+private:
+	RTLILBuilder &builder;
+	Yosys::dict<RTLIL::IdString, RTLIL::Const> save;
 };
 
 class DiagnosticIssuer {
@@ -479,6 +508,16 @@ struct NetlistContext : RTLILBuilder, public DiagnosticIssuer {
 	Yosys::pool<const ast::Symbol *> detected_memories;
 	bool is_inferred_memory(const ast::Symbol &symbol);
 	bool is_inferred_memory(const ast::Expression &expr);
+
+	bool is_blackbox(const ast::DefinitionSymbol &sym, slang::Diagnostic *why_blackbox=nullptr);
+	bool should_dissolve(const ast::InstanceSymbol &sym, slang::Diagnostic *why_not_dissolved=nullptr);
+
+	// Find the "realm" for given symbol, i.e. the containing instance body which is not
+	// getting dissolved (if we are flattening this will be the top body)
+	const ast::InstanceBodySymbol &find_symbol_realm(const ast::Symbol &symbol);
+	const ast::InstanceBodySymbol &find_common_ancestor(const ast::InstanceBodySymbol &a, const ast::InstanceBodySymbol &b);
+	bool check_hier_ref(const ast::ValueSymbol &symbol, slang::SourceRange range);
+
 };
 
 // slang_frontend.cc

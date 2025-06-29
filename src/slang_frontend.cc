@@ -1951,21 +1951,27 @@ public:
 			// map from a driven signal to the corresponding enable/staging signal
 			// TODO: SigSig needlessly costly here
 			Yosys::dict<VariableBit, RTLIL::SigSig> signaling;
-			RTLIL::SigSpec enables;
+			RTLIL::SigSpec enables, all_staging;
 
-			for (auto bit : latch_driven) {
-				// TODO: create latches in groups
-				RTLIL::SigBit en = netlist.canvas->addWire(netlist.new_id(), 1);
-				RTLIL::SigBit staging = netlist.canvas->addWire(netlist.new_id(), 1);
-				RTLIL::Cell *cell = netlist.canvas->addDlatch(netlist.new_id(), en,
-														staging, netlist.convert_static(bit), true);
-				signaling[bit] = {en, staging};
+			latch_driven.sort_and_unify();
+			for (auto chunk : latch_driven.chunks()) {
+				RTLIL::SigSpec en = netlist.canvas->addWire(netlist.new_id(), chunk.bitwidth());
+				RTLIL::SigSpec staging = netlist.canvas->addWire(netlist.new_id(), chunk.bitwidth());
+				
+				for (int i = 0; i < chunk.bitwidth(); i++) {
+					RTLIL::Cell *cell = netlist.canvas->addDlatch(netlist.new_id(), en[i],
+											staging[i], netlist.convert_static(chunk[i]), true);
+					transfer_attrs(symbol, cell);
+					signaling[chunk[i]] = {en[i], staging[i]};
+				}
 				enables.append(en);
-				transfer_attrs(symbol, cell);
+				all_staging.append(staging);
 			}
 
 			procedure.root_case->aux_actions.push_back(
 						{enables, RTLIL::SigSpec(RTLIL::S0, enables.size())});
+			procedure.root_case->aux_actions.push_back(
+						{all_staging, RTLIL::SigSpec(RTLIL::Sx, all_staging.size())});
 			procedure.root_case->insert_latch_signaling(netlist, signaling);
 		}
 
@@ -2849,6 +2855,12 @@ public:
 		}
 	}
 
+	void handle(const ast::PropertySymbol &sym) {
+		if (!netlist.settings.ignore_assertions.value_or(false)) {
+			netlist.add_diag(diag::SVAUnsupported, sym.location);
+		}
+	}
+
 	void handle(const ast::Symbol &sym)
 	{
 		unimplemented(sym);
@@ -3021,6 +3033,9 @@ RTLIL::Wire *NetlistContext::add_wire(const ast::ValueSymbol &symbol)
 
 bool NetlistContext::is_blackbox(const ast::DefinitionSymbol &sym, slang::Diagnostic *why_blackbox)
 {
+	if (sym.cellDefine)
+		return true;
+
 	for (auto attr : sym.getParentScope()->getCompilation().getAttributes(sym)) {
 		if (attr->name == "blackbox"sv && !attr->getValue().isFalse()) {
 			if (why_blackbox) {
@@ -3268,6 +3283,9 @@ void fixup_options(SynthesisSettings &settings, slang::driver::Driver &driver)
 		disable_inst_caching = true;
 	}
 	settings.disable_instance_caching = disable_inst_caching.value();
+
+	// we cannot handle references into unknown modules
+	driver.options.compilationFlags[ast::CompilationFlags::DisallowRefsToUnknownInstances] = true;
 
 	// revisit slang#1326 in case of issues with this override
 	auto &time_scale = driver.options.timeScale;

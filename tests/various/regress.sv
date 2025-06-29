@@ -181,3 +181,22 @@ module r20(input [31:0] x, output [31:0] q);
 	endfunction
 	assign q = pow(x, 3);
 endmodule
+
+// $fatal with bad arg type
+module r21(input clk);
+    always @(posedge clk) begin
+        // ... long procedure
+        if (0)
+        	$fatal("foo");
+    end
+endmodule
+
+// propagate bounds through multiplication
+module r22(input clk, input [31:0] i, output reg [31:0] q,
+           input [1:0] a, input [1:0] b);
+    always @(posedge clk) begin
+        q = i;
+        for (int i = 1; i < a * b; i++)
+            q = q * i;
+    end
+endmodule

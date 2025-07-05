@@ -22,6 +22,27 @@ if (APPLE AND BUILD_AS_PLUGIN)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -undefined dynamic_lookup")
 endif()
 
+include(AddCompileLinkOptions)
+
+option(WITH_COVERAGE "Build with code coverage collection" OFF)
+if (WITH_COVERAGE)
+    if (CMAKE_CXX_COMPILER_ID STREQUAL Clang)
+        add_compile_link_options(-fprofile-instr-generate -fcoverage-mapping)
+    else()
+        message(FATAL_ERROR "Unsupported compiler for coverage collection: ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+endif()
+
+option(WITH_UBSAN "Build with UndefinedBehaviorSanitizer" OFF)
+if (WITH_UBSAN)
+    add_compile_link_options(${sanitizer_options} -fsanitize=undefined)
+endif()
+
+option(WITH_ASAN "Build with AddressSanitizer" OFF)
+if (WITH_ASAN)
+    add_compile_link_options(${sanitizer_options} -fsanitize=undefined)
+endif()
+
 include(FetchContent)
 
 # The log will show "-- Using remote fmt library", but that is misleading,

@@ -200,3 +200,48 @@ module r22(input clk, input [31:0] i, output reg [31:0] q,
             q = q * i;
     end
 endmodule
+
+// specify ignored
+module r23(input A, output B);
+specparam a = 1;
+
+specify
+endspecify
+
+specify
+    (A => B) = (1);
+    (A- => B) = (1,2);
+    (A+ => B) = (1,2,3);
+    (A => B) = (
+     1.1, 2, 3,
+     4, 5.5, 6.6
+    );
+    (A => B) = (
+     1.1, 2, 3,
+     4, 5.5, 6.6,
+     7.7, 8.8, 9,
+     10.1, 11, 12
+    );
+    specparam [1:2] b = 1;
+endspecify
+
+specify
+    specparam c = 1:2:3;
+endspecify
+endmodule
+
+// test for an edge case from way back
+module r24();
+	reg [31:0] y[0:0];
+	wire z;
+	wire [63:0] x;
+
+	always_comb begin
+		for (int i = 0; i < 32; i++) begin
+			if(~z) begin
+			end else begin
+				y[0][i] = x[2*i+1];
+			end
+		end
+	end
+endmodule

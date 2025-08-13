@@ -51,8 +51,7 @@ EnterAutomaticScopeGuard::~EnterAutomaticScopeGuard()
 
 RegisterEscapeConstructGuard::RegisterEscapeConstructGuard(ProceduralContext &context,
 		EscapeConstructKind kind, const ast::SubroutineSymbol *subroutine)
-	: context(context), flag(Variable::disable_for_scope(
-								&subroutine->getBody(), context.eval.current_scope_nest_level))
+	: context(context), flag(Variable::escape_flag(context.flag_counter++))
 {
 	assert(kind == EscapeConstructKind::FunctionBody);
 	context.escape_stack.emplace_back();
@@ -65,11 +64,7 @@ RegisterEscapeConstructGuard::RegisterEscapeConstructGuard(ProceduralContext &co
 
 RegisterEscapeConstructGuard::RegisterEscapeConstructGuard(
 		ProceduralContext &context, EscapeConstructKind kind, const ast::Statement *statement)
-	: context(context),
-	  flag(kind == EscapeConstructKind::Loop
-					  ? Variable::break_for_scope(statement, context.eval.current_scope_nest_level)
-					  : Variable::disable_for_scope(
-								statement, context.eval.current_scope_nest_level))
+	: context(context), flag(Variable::escape_flag(context.flag_counter++))
 {
 	log_assert(kind == EscapeConstructKind::Loop || kind == EscapeConstructKind::LoopBody);
 	context.escape_stack.emplace_back();
@@ -126,6 +121,7 @@ void ProceduralContext::inherit_state(ProceduralContext &other)
 	seen_nonblocking_assignment = other.seen_nonblocking_assignment;
 	preceding_memwr = other.preceding_memwr;
 	vstate = other.vstate;
+	flag_counter = other.flag_counter;
 }
 
 void ProceduralContext::copy_case_tree_into(RTLIL::CaseRule &rule)
@@ -174,7 +170,7 @@ void crop_zero_mask(const RTLIL::SigSpec &mask, VariableBits &target)
 	}
 }
 
-void ProceduralContext::do_assign(slang::SourceLocation loc, VariableBits lvalue,
+void ProceduralContext::update_variable_state(slang::SourceLocation loc, VariableBits lvalue,
 		RTLIL::SigSpec unmasked_rvalue, RTLIL::SigSpec mask, bool blocking)
 {
 	log_assert((int)lvalue.size() == unmasked_rvalue.size());
@@ -186,13 +182,24 @@ void ProceduralContext::do_assign(slang::SourceLocation loc, VariableBits lvalue
 
 	for (auto chunk : lvalue.chunks()) {
 		if (chunk.variable.kind == Variable::Static) {
-			// TODO: proper message on blocking/nonblocking mixing
 			if (blocking) {
-				log_assert(!seen_nonblocking_assignment.count(chunk.variable));
-				seen_blocking_assignment.insert(chunk.variable);
+				if (seen_nonblocking_assignment.count(chunk.variable)) {
+					auto &diag = netlist.add_diag(diag::BlockingAssignmentAfterNonblocking, loc);
+					diag << chunk.variable.get_symbol()->name;
+					diag.addNote(diag::NotePreviousAssignment,
+							seen_nonblocking_assignment.at(chunk.variable));
+				} else {
+					seen_blocking_assignment[chunk.variable] = loc;
+				}
 			} else {
-				log_assert(!seen_blocking_assignment.count(chunk.variable));
-				seen_nonblocking_assignment.insert(chunk.variable);
+				if (seen_blocking_assignment.count(chunk.variable)) {
+					auto &diag = netlist.add_diag(diag::NonblockingAssignmentAfterBlocking, loc);
+					diag << chunk.variable.get_symbol()->name;
+					diag.addNote(diag::NotePreviousAssignment,
+							seen_blocking_assignment.at(chunk.variable));
+				} else {
+					seen_nonblocking_assignment[chunk.variable] = loc;
+				}
 			}
 		} else {
 			// This is expected to be an AST invariant -- we don't have a symbol
@@ -219,7 +226,7 @@ void ProceduralContext::do_assign(slang::SourceLocation loc, VariableBits lvalue
 void ProceduralContext::do_simple_assign(
 		slang::SourceLocation loc, VariableBits lvalue, RTLIL::SigSpec rvalue, bool blocking)
 {
-	do_assign(loc, lvalue, rvalue, RTLIL::SigSpec(RTLIL::S1, rvalue.size()), blocking);
+	update_variable_state(loc, lvalue, rvalue, RTLIL::SigSpec(RTLIL::S1, rvalue.size()), blocking);
 }
 
 RTLIL::SigSpec ProceduralContext::substitute_rvalue(VariableBits bits)
@@ -229,7 +236,8 @@ RTLIL::SigSpec ProceduralContext::substitute_rvalue(VariableBits bits)
 		// We disallow mixing of blocking and non-blocking assignments to the
 		// same variable from the same process. That simplifies the handling
 		// here.
-		if (chunk.variable.kind != Variable::Static || seen_blocking_assignment.count(chunk.variable))
+		if (chunk.variable.kind != Variable::Static ||
+				seen_blocking_assignment.count(chunk.variable))
 			subed.append(vstate.evaluate(netlist, chunk));
 		else
 			subed.append(netlist.convert_static(chunk));
@@ -397,7 +405,7 @@ void ProceduralContext::assign_rvalue_inner(const ast::AssignmentExpression &ass
 		preceding_memwr.push_back(memwr);
 	} else {
 		VariableBits lvalue = eval.lhs(*raw_lexpr);
-		do_assign(assign.sourceRange.start(), lvalue, raw_rvalue, raw_mask, blocking);
+		update_variable_state(assign.sourceRange.start(), lvalue, raw_rvalue, raw_mask, blocking);
 	}
 }
 

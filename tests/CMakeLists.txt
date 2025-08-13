@@ -28,6 +28,7 @@ set(ALL_TESTS
     unit/function_call.ys
     unit/latch.ys
     unit/selftests.tcl
+    various/assign_mixing.ys
     various/bb_detect.ys
     various/blackbox_scenarios.ys
     various/defaults.ys
@@ -35,9 +36,12 @@ set(ALL_TESTS
     various/expr.ys
     various/flop_naming.ys
     various/formal_stmts.ys
+    various/hierref_error.ys
+    various/ignore_asserts.ys
     various/intf_array_naming.ys
     various/intf_w_hierarchy.ys
     various/issue142.ys
+    various/issue208.ys
     various/issue50.ys
     various/mem_inference.ys
     various/meminit.ys
@@ -48,7 +52,6 @@ set(ALL_TESTS
     various/timescale.ys
     various/top_attr.ys
     various/unknown_cells.ys
-    various/hierref_error.ys
 )
 
 foreach(test_script ${ALL_TESTS})

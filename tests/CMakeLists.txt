@@ -25,14 +25,17 @@ endif()
 
 set(ALL_TESTS
     unit/async.ys
+    unit/dualedge.ys
     unit/function_call.ys
     unit/latch.ys
     unit/selftests.tcl
     various/assign_mixing.ys
     various/bb_detect.ys
     various/blackbox_scenarios.ys
+    various/bus_range.ys
     various/defaults.ys
     various/delays.ys
+    various/dualedge.ys
     various/expr.ys
     various/flop_naming.ys
     various/formal_stmts.ys
@@ -42,6 +45,9 @@ set(ALL_TESTS
     various/intf_w_hierarchy.ys
     various/issue142.ys
     various/issue208.ys
+    various/issue227.ys
+    various/issue240.ys
+    various/issue266.ys
     various/issue50.ys
     various/mem_inference.ys
     various/meminit.ys
@@ -52,6 +58,12 @@ set(ALL_TESTS
     various/timescale.ys
     various/top_attr.ys
     various/unknown_cells.ys
+    various/toplevel_intf_unsupported.ys
+    various/wait_test.ys
+    various/expect_test.ys
+    various/program_test.ys
+    various/wor_unsupp.ys
+    various/synthesis_define.ys
 )
 
 foreach(test_script ${ALL_TESTS})

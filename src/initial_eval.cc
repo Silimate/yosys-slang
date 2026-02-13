@@ -1,3 +1,4 @@
+// clang-format off
 //
 // Derived from:
 //   third_party/slang/source/ast/Statements.cpp
@@ -704,6 +705,12 @@ ER EvalVisitor::visit(const TimedStatement &stmt)
 	// ignore timing and visit inner statement
 	ER result = stmt.stmt.visit(*this);
 	return result;
+}
+
+ER EvalVisitor::visit(const slang::ast::WaitStatement &stmt)
+{
+	context.addDiag(slang_frontend::diag::WaitStatementUnsupported, stmt.sourceRange);
+	return ER::Success;
 }
 
 ER EvalVisitor::visit(const EmptyStatement&)

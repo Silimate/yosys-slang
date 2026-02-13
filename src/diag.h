@@ -5,8 +5,8 @@
 // Distributed under the terms of the ISC license, see LICENSE
 //
 #pragma once
-#include "slang/diagnostics/Diagnostics.h"
 #include "slang/diagnostics/DiagnosticEngine.h"
+#include "slang/diagnostics/Diagnostics.h"
 
 namespace slang_frontend {
 namespace diag {
@@ -15,6 +15,7 @@ extern slang::DiagCode SignalSensitivityAmbiguous;
 extern slang::DiagCode EdgeImplicitMixing;
 extern slang::DiagCode GenericTimingUnsyn;
 extern slang::DiagCode BothEdgesUnsupported;
+extern slang::DiagCode WaitStatementUnsupported;
 extern slang::DiagCode NoteSignalEvent;
 extern slang::DiagCode ExpectingIfElseAload;
 extern slang::DiagCode NoteDuplicateEdgeSense;
@@ -51,6 +52,8 @@ extern slang::DiagCode NoteIgnoreInitial;
 extern slang::DiagCode PortCorrespondence;
 extern slang::DiagCode UnsynthesizableFeature;
 extern slang::DiagCode SVAUnsupported;
+extern slang::DiagCode ExpectStatementUnsupported;
+extern slang::DiagCode ProgramUnsupported;
 extern slang::DiagCode ForbiddenDemotion;
 extern slang::DiagCode UdpUnsupported;
 extern slang::DiagCode PrimTypeUnsupported;
@@ -63,7 +66,13 @@ extern slang::DiagCode BlockingAssignmentAfterNonblocking;
 extern slang::DiagCode NonblockingAssignmentAfterBlocking;
 extern slang::DiagCode NotePreviousAssignment;
 extern slang::DiagCode NetTypeUnsupported;
+extern slang::DiagCode NoAllowTopLevelIfacePorts;
+extern slang::DiagCode RefUnsupported;
+extern slang::DiagCode InlinedInOutUnsupported;
+extern slang::DiagCode PastGatingClockingUnsupported;
+extern slang::DiagCode SystemFunctionRequireClockedBlock;
+extern slang::DiagCode UnsupportedBitConversion;
 
 void setup_messages(slang::DiagnosticEngine &engine);
-};
-};
+}; // namespace diag
+}; // namespace slang_frontend

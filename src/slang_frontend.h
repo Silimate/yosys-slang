@@ -4,6 +4,7 @@
 // Copyright 2024 Martin Povišer <povik@cutebit.org>
 // Distributed under the terms of the ISC license, see LICENSE
 //
+// clang-format off
 #pragma once
 #include "slang/ast/EvalContext.h"
 #include "kernel/rtlil.h"
@@ -37,6 +38,7 @@ namespace slang {
 		class StreamingConcatenationExpression;
 		class ConversionExpression;
 		class AssignmentExpression;
+		class FieldSymbol;
 	};
 };
 
@@ -66,6 +68,12 @@ class VariableBit;
 class VariableChunk;
 struct ProcessTiming;
 class Case;
+
+// Slang stores `FieldSymbol::bitOffset` MSB-first inside unpacked structs, while
+// Yosys works with bitstream-serialization order (LSB-first). This helper
+// mirrors Slang's offset so every caller sees the physical bit index actually
+// used when flattening into a bitstream.
+uint64_t bitstream_member_offset(const ast::FieldSymbol &member);
 
 class Variable {
 public:
@@ -122,7 +130,6 @@ struct EvalContext {
 	// Scope nest level tracking to isolate automatic variables of reentrant
 	// scopes (i.e. functions)
 	Yosys::dict<const ast::Scope *, int> scope_nest_level;
-	int current_scope_nest_level;
 
 	int find_nest_level(const ast::Scope *scope);
 	Variable variable(const ast::ValueSymbol &symbol);
@@ -168,7 +175,6 @@ public:
 private:
 	EvalContext &context;
 	const ast::Scope *scope;
-	int save_scope_nest_level;
 };
 
 class UnrollLimitTracking {
@@ -210,7 +216,7 @@ public:
 	EvalContext eval;
 	int effects_priority = 0;
 
-	Case *root_case;
+	std::unique_ptr<Case> root_case;
 	Case *current_case;
 
 private:
@@ -350,6 +356,19 @@ struct RTLILBuilder {
 			done += chunk.size();
 		}
 	}
+	SigSpec CountOnes(SigSpec sig, int result_width);
+
+	void add_dual_edge_aldff(const std::string &base_name, RTLIL::SigSpec clk,
+							 RTLIL::SigSpec aload, RTLIL::SigSpec d, RTLIL::SigSpec q,
+							 RTLIL::SigSpec ad, bool aload_polarity);
+	void add_dff(RTLIL::IdString name, const RTLIL::SigSpec &clk, const RTLIL::SigSpec &d,
+				 const RTLIL::SigSpec &q, bool clk_polarity=true);
+	void add_dffe(RTLIL::IdString name, const RTLIL::SigSpec &clk, const RTLIL::SigSpec &en,
+				 const RTLIL::SigSpec &d, const RTLIL::SigSpec &q, bool clk_polarity=true,
+				 bool en_polarity=true);
+	void add_aldff(RTLIL::IdString name, const RTLIL::SigSpec &clk, const RTLIL::SigSpec &aload,
+				   const RTLIL::SigSpec &d, const RTLIL::SigSpec &q, const RTLIL::SigSpec &ad, 
+				   bool clk_polarity = true, bool aload_polarity = true);
 
 private:
 	std::pair<std::string, SigSpec> add_y_wire(int width);
@@ -410,6 +429,10 @@ struct SynthesisSettings {
 	std::optional<bool> empty_blackboxes;
 	std::optional<bool> ast_compilation_only;
 	std::optional<bool> no_default_translate_off;
+	std::optional<bool> allow_dual_edge_ff;
+	std::optional<bool> no_synthesis_define;
+	// pass std::less<> to enable transparent lookup
+	std::set<std::string, std::less<>> blackboxed_modules;
 	bool disable_instance_caching = false;
 
 	enum HierMode {
@@ -452,6 +475,8 @@ struct NetlistContext : RTLILBuilder, public DiagnosticIssuer {
 
 	// Returns an ID string to use in the netlist to represent the given symbol.
 	RTLIL::IdString id(const ast::Symbol &sym);
+	RTLIL::IdString id(const ast::ValueSymbol &sym);
+	std::string hdlname(const ast::Symbol &sym);
 
 	RTLIL::Wire *add_wire(const ast::ValueSymbol &sym);
 	RTLIL::Wire *wire(const ast::Symbol &sym);
@@ -462,15 +487,14 @@ struct NetlistContext : RTLILBuilder, public DiagnosticIssuer {
 	};
 	Yosys::dict<RTLIL::IdString, Memory> emitted_mems;
 
-	// Used to implement modports on uncollapsed levels of hierarchy
+	// Used to implement modports on `realm`
 	Yosys::dict<const ast::Scope*, std::string YS_HASH_PTR_OPS> scopes_remap;
 
 	// Cache per-symbol Wire* pointers
 	Yosys::dict<const ast::Symbol*, RTLIL::Wire *> wire_cache;
 
-	// With this flag set we will not elaborate this netlist; we set this when
-	// `scopes_remap` is incomplete due to errors in processing an instantiation
-	// of `realm`.
+	// Flag to disable elaboration; we set this when `scopes_remap` is
+	// incomplete due to prior errors
 	bool disabled = false;
 
 	NetlistContext(RTLIL::Design *design,
@@ -485,21 +509,6 @@ struct NetlistContext : RTLILBuilder, public DiagnosticIssuer {
 
 	NetlistContext(const NetlistContext&) = delete;
 	NetlistContext& operator=(const NetlistContext&) = delete;
-	NetlistContext(NetlistContext&& other)
-		: settings(other.settings), compilation(other.compilation),
-		  realm(other.realm), eval(*this)
-	{
-		log_assert(other.eval.procedural == nullptr);
-		log_assert(other.eval.lvalue == nullptr);
-
-		emitted_mems.swap(other.emitted_mems);
-		scopes_remap.swap(other.scopes_remap);
-		wire_cache.swap(other.wire_cache);
-		detected_memories.swap(other.detected_memories);
-		canvas = other.canvas;
-		other.canvas = nullptr;
-		disabled = other.disabled;
-	}
 
 	Yosys::pool<const ast::Symbol *> detected_memories;
 	bool is_inferred_memory(const ast::Symbol &symbol);
@@ -508,22 +517,25 @@ struct NetlistContext : RTLILBuilder, public DiagnosticIssuer {
 	bool is_blackbox(const ast::DefinitionSymbol &sym, slang::Diagnostic *why_blackbox=nullptr);
 	bool should_dissolve(const ast::InstanceSymbol &sym, slang::Diagnostic *why_not_dissolved=nullptr);
 
-	// Find the "realm" for given symbol, i.e. the containing instance body which is not
-	// getting dissolved (if we are flattening this will be the top body)
+	// Find the "realm" for the given symbol, i.e. the containing instance body
+	// which is not getting dissolved during netlist emission. If we are fully flattening
+	// this will be the top module.
 	const ast::InstanceBodySymbol &find_symbol_realm(const ast::Symbol &symbol);
 	const ast::InstanceBodySymbol &find_common_ancestor(const ast::InstanceBodySymbol &a, const ast::InstanceBodySymbol &b);
 	bool check_hier_ref(const ast::ValueSymbol &symbol, slang::SourceRange range);
 
+	const std::optional<RTLIL::Const> convert_const(const slang::ConstantValue &constval, slang::SourceLocation loc);
 };
 
 // slang_frontend.cc
+RTLIL::SigBit inside_comparison(EvalContext &eval, RTLIL::SigSpec left, const ast::Expression &expr);
 extern std::string hierpath_relative_to(const ast::Scope *relative_to, const ast::Scope *scope);
-template<typename T> void transfer_attrs(T &from, RTLIL::AttrObject *to);
+template<typename T> void transfer_attrs(NetlistContext &netlist, T &from, RTLIL::AttrObject *to);
 
 // blackboxes.cc
 extern void import_blackboxes_from_rtlil(slang::SourceManager &mgr, ast::Compilation &target, RTLIL::Design *source);
 extern bool is_decl_empty_module(const slang::syntax::SyntaxNode &syntax);
-extern void export_blackbox_to_rtlil(ast::Compilation &comp, const ast::InstanceSymbol &inst, RTLIL::Design *target);
+extern void export_blackbox_to_rtlil(NetlistContext &netlist, const ast::InstanceSymbol &inst, RTLIL::Design *target);
 
 // abort_helpers.cc
 [[noreturn]] void unimplemented_(const ast::Symbol &obj, const char *file, int line, const char *condition);

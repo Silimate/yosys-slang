@@ -8,9 +8,9 @@
 
 #include "slang/ast/symbols/ValueSymbol.h"
 
+#include "diag.h"
 #include "slang_frontend.h"
 #include "variables.h"
-#include "diag.h"
 
 namespace slang_frontend {
 
@@ -27,7 +27,8 @@ namespace slang_frontend {
 //    because we may need to dynamically mask the individual assignments
 //
 struct Case;
-struct Switch {
+struct Switch
+{
 	int level;
 	const ast::Statement *statement = nullptr;
 
@@ -39,17 +40,19 @@ struct Switch {
 
 	~Switch();
 	Case *add_case(std::vector<RTLIL::SigSpec> compare);
-	RTLIL::SwitchRule *lower();
+	RTLIL::SwitchRule *lower(NetlistContext &netlist);
 
 	// trivial switch has signal={}, one case, and no special attributes
 	bool trivial();
 };
 
-struct Case {
+struct Case
+{
 	int level = 0;
 	const ast::Statement *statement = nullptr;
 
-	struct Action {
+	struct Action
+	{
 		slang::SourceLocation loc;
 
 		VariableBits lvalue;
@@ -61,7 +64,8 @@ struct Case {
 	std::vector<Switch *> switches;
 	std::vector<RTLIL::SigSig> aux_actions;
 
-	~Case() {
+	~Case()
+	{
 		for (auto switch_ : switches)
 			delete switch_;
 	}
@@ -75,10 +79,10 @@ struct Case {
 		return sw;
 	}
 
-	void copy_into(RTLIL::CaseRule *rule)
+	void copy_into(NetlistContext &netlist, RTLIL::CaseRule *rule)
 	{
 		if (statement)
-			transfer_attrs(*statement, rule);
+			transfer_attrs(netlist, *statement, rule);
 
 		rule->compare = compare;
 		rule->actions.insert(rule->actions.end(), aux_actions.begin(), aux_actions.end());
@@ -102,14 +106,14 @@ struct Case {
 			}
 			if (it == ite)
 				break;
-			rule->switches.push_back((*it)->lower());
+			rule->switches.push_back((*it)->lower(netlist));
 		}
 	}
 
-	RTLIL::CaseRule *lower()
+	RTLIL::CaseRule *lower(NetlistContext &netlist)
 	{
 		RTLIL::CaseRule *ret = new RTLIL::CaseRule;
-		copy_into(ret);
+		copy_into(netlist, ret);
 		return ret;
 	}
 
@@ -124,7 +128,7 @@ struct Case {
 			VariableBits lvalue;
 			RTLIL::SigSpec enables, lstaging, rvalue;
 
-			for (int i = 0; i < (int) action.lvalue.size(); i++) {
+			for (int i = 0; i < (int)action.lvalue.size(); i++) {
 				VariableBit lbit = action.lvalue[i];
 
 				if (map.count(lbit)) {
@@ -157,11 +161,11 @@ struct Case {
 		}
 
 		for (auto switch_ : switches)
-		for (auto case_ : switch_->cases)
-			case_->insert_latch_signaling(issuer, map);
+			for (auto case_ : switch_->cases)
+				case_->insert_latch_signaling(issuer, map);
 
 		switches.insert(switches.begin(), prepended_switches.begin(), prepended_switches.end());
 	}
 };
 
-};
+}; // namespace slang_frontend

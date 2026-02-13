@@ -33,8 +33,7 @@ EnterAutomaticScopeGuard::EnterAutomaticScopeGuard(EvalContext &context, const a
 	: context(context), scope(scope)
 {
 	if (scope) {
-		save_scope_nest_level = context.current_scope_nest_level;
-		context.current_scope_nest_level = ++context.scope_nest_level[scope];
+		++context.scope_nest_level[scope];
 	}
 }
 
@@ -45,7 +44,6 @@ EnterAutomaticScopeGuard::~EnterAutomaticScopeGuard()
 		log_assert(new_nest_level >= 0);
 		if (new_nest_level == 0)
 			context.scope_nest_level.erase(scope);
-		context.current_scope_nest_level = save_scope_nest_level;
 	}
 }
 
@@ -104,7 +102,7 @@ ProceduralContext::ProceduralContext(NetlistContext &netlist, ProcessTiming &tim
 	: unroll_limit(netlist, netlist.settings.unroll_limit()), netlist(netlist), timing(timing),
 	  eval(netlist, *this)
 {
-	root_case = new Case;
+	root_case = std::make_unique<Case>();
 	current_case = root_case->add_switch({})->add_case({});
 }
 
@@ -126,7 +124,7 @@ void ProceduralContext::inherit_state(ProceduralContext &other)
 
 void ProceduralContext::copy_case_tree_into(RTLIL::CaseRule &rule)
 {
-	root_case->copy_into(&rule);
+	root_case->copy_into(netlist, &rule);
 }
 
 VariableBits ProceduralContext::all_driven()
@@ -201,6 +199,9 @@ void ProceduralContext::update_variable_state(slang::SourceLocation loc, Variabl
 					seen_nonblocking_assignment[chunk.variable] = loc;
 				}
 			}
+		} else if (chunk.variable.kind == Variable::Dummy) {
+			// Dummies are for graceful error handling and require
+			// no checking of blocking or nonblocking case
 		} else {
 			// This is expected to be an AST invariant -- we don't have a symbol
 			// to use here for the ast_invariant() helper, so it's a plain
@@ -336,12 +337,13 @@ void ProceduralContext::assign_rvalue_inner(const ast::AssignmentExpression &ass
 				break;
 			}
 
-			int pad = acc.value().type->getBitstreamWidth() - acc.type->getBitstreamWidth() -
-					  member.bitOffset;
+			int bit_offset = bitstream_member_offset(member);
+			int parent_width = acc.value().type->getBitstreamWidth();
+			int pad = parent_width - acc.type->getBitstreamWidth() - bit_offset;
 			raw_mask = {RTLIL::SigSpec(RTLIL::S0, pad), raw_mask,
-					RTLIL::SigSpec(RTLIL::S0, member.bitOffset)};
+					RTLIL::SigSpec(RTLIL::S0, bit_offset)};
 			raw_rvalue = {RTLIL::SigSpec(RTLIL::Sx, pad), raw_rvalue,
-					RTLIL::SigSpec(RTLIL::Sx, member.bitOffset)};
+					RTLIL::SigSpec(RTLIL::Sx, bit_offset)};
 			raw_lexpr = &acc.value();
 		} break;
 		case ast::ExpressionKind::Concatenation: {
@@ -369,7 +371,7 @@ void ProceduralContext::assign_rvalue_inner(const ast::AssignmentExpression &ass
 		log_assert(netlist.is_inferred_memory(sel.value()));
 		require(assign, !blocking);
 
-		RTLIL::IdString id = netlist.id(sel.value().as<ast::NamedValueExpression>().symbol);
+		RTLIL::IdString id = netlist.id(sel.value().as<ast::ValueExpressionBase>().symbol);
 		RTLIL::Cell *memwr = netlist.canvas->addCell(netlist.new_id(), ID($memwr_v2));
 		memwr->setParam(ID::MEMID, id.str());
 		if (timing.implicit()) {

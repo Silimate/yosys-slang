@@ -1,3 +1,4 @@
+// clang-format off
 #include "slang/ast/ASTVisitor.h"
 #include "slang/ast/EvalContext.h"
 #include "slang/ast/Expression.h"
@@ -34,6 +35,7 @@ public:
 	ER visit(const slang::ast::ExpressionStatement &stmt);
 	ER visit(const slang::ast::ImmediateAssertionStatement &stmt);
 	ER visit(const slang::ast::TimedStatement &stmt);
+	ER visit(const slang::ast::WaitStatement &stmt);
 	ER visit(const slang::ast::EmptyStatement &stmt);
 	ER visit(const slang::ast::Statement &);
 
